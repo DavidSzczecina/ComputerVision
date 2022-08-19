@@ -24,91 +24,8 @@ from threading import Thread
 import importlib.util
 import datetime
 
-#gPhoto stuff
-from time import sleep #Import all necesary libraries
-from datetime import datetime
-from sh import gphoto2 as gp
-import signal, os, subprocess
-
-
-def killgphoto2Process ():   #Kill gphoto2 process that starts when you connect camera.
-    p = subprocess.Popen(['ps', '-A'], stdout=subprocess.PIPE)
-    out, err = p.communicate ()
-
-    for line in out.splitlines ():    #Search for the line that has process we want to kill
-        if b'gvfsd-gphoto2' in line:
-            pid = int (line.split(None,1)[0])
-            os.kill(pid, signal.SIGKILL) #kills process
-
-#Define variables
-shot_date = datetime.now().strftime("%Y-%m-%d")
-shot_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-clearCommand = ["--folder", "/store_00010001/DCIM/101D3400", "-R", "--delete-all-files"]
-#imageCommand = ["--trigger-capture"]
-imageCommand = ["--capture-image"]
-downloadCommand = ["--get-all-files"]
-picID = "piShots"
-saveFolder = "SaveFolderError"
-numPictures = 1
-delayDuration = 1
-saveLocation = "/home/pi/Desktop/gphoto/images/" + saveFolder
-saveLocation_time = "/home/pi/Desktop/gphoto/images/" + shot_time
-
-#Subprograms
-def getInputs(): #Gets inputs
-    print("Enter the amount of photos to be taken:") #numPictures = amount of pictures to take
-    numPicturesStr = input()
-    global numPictures
-    numPictures = int(numPicturesStr)
-
-    print("Enter the delay between each photo:") #delayDuration = seconds between each photo
-    delayDurationStr = input()
-    global delayDuration
-    delayDuration = int(delayDurationStr)
-
-    print("Enter save folder name:") #saveFolder = name of save folder where photos go
-    global saveFolder
-    saveFolder = input()
-    saveLocation = "/home/pi/Desktop/gphoto/images/" + saveFolder
-
-def createSaveFolder(): #Creates Save folder, uses 'saveFolder' variable to name
-    try:
-        saveLocation = "/home/pi/Desktop/gphoto/images/" + saveFolder
-        os.makedirs(saveLocation)
-        os.chdir(saveLocation)
-    except:
-        print("Failed to create the new directory, Saved as Date/Time")
-        saveLocation_time = "/home/pi/Desktop/gphoto/images/" + shot_time
-        os.makedirs(saveLocation_time)
-        os.chdir(saveLocation_time)
-
-def captureImages():
-    gp(imageCommand)
-    gp(downloadCommand)
-    gp(clearCommand)
-    renameFiles(picID) #Maybe remove this and do after to optimize??
-
-def renameFiles(ID):
-    for filename in os.listdir("."):
-        if len(filename) < 13:
-            if filename.endswith(".JPG"):
-                shot_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                os.rename(filename, (shot_time + ".JPG"))
-                print("Renamed the JPG")
-            elif filename.endswith(".NEF"):
-                os.rename(filename, (shot_time + ".NEF"))
-                print("Renamed the NEF")
-
-killgphoto2Process()
-gp(clearCommand)
-getInputs()
-createSaveFolder()
-
-
-
-#tfLite stuff
 # Define VideoStream class to handle streaming of video from webcam in separate processing thread
+# Source - Adrian Rosebrock, PyImageSearch: https://www.pyimagesearch.com/2015/12/28/increasing-raspberry-pi-fps-with-python-and-opencv/
 class VideoStream:
     """Camera object that controls video streaming from the Picamera"""
     def __init__(self,resolution=(640,480),framerate=30):
@@ -161,6 +78,8 @@ parser.add_argument('--threshold', help='Minimum confidence threshold for displa
                     default=0.5)
 parser.add_argument('--resolution', help='Desired webcam resolution in WxH. If the webcam does not support the resolution entered, errors may occur.',
                     default='1280x720')
+parser.add_argument('--edgetpu', help='Use Coral Edge TPU Accelerator to speed up detection',
+                    action='store_true')
 
 args = parser.parse_args()
 
@@ -170,14 +89,26 @@ LABELMAP_NAME = args.labels
 min_conf_threshold = float(args.threshold)
 resW, resH = args.resolution.split('x')
 imW, imH = int(resW), int(resH)
+use_TPU = args.edgetpu
 
 # Import TensorFlow libraries
 # If tflite_runtime is installed, import interpreter from tflite_runtime, else import from regular tensorflow
+# If using Coral Edge TPU, import the load_delegate library
 pkg = importlib.util.find_spec('tflite_runtime')
 if pkg:
     from tflite_runtime.interpreter import Interpreter
+    if use_TPU:
+        from tflite_runtime.interpreter import load_delegate
 else:
     from tensorflow.lite.python.interpreter import Interpreter
+    if use_TPU:
+        from tensorflow.lite.python.interpreter import load_delegate
+
+# If using Edge TPU, assign filename for Edge TPU model
+if use_TPU:
+    # If user has specified the name of the .tflite file, use that name, otherwise use default 'edgetpu.tflite'
+    if (GRAPH_NAME == 'detect.tflite'):
+        GRAPH_NAME = 'edgetpu.tflite'
 
 # Get path to current working directory
 CWD_PATH = os.getcwd()
@@ -199,7 +130,13 @@ if labels[0] == '???':
     del(labels[0])
 
 # Load the Tensorflow Lite model.
-interpreter = Interpreter(model_path=PATH_TO_CKPT)
+# If using Edge TPU, use special load_delegate argument
+if use_TPU:
+    interpreter = Interpreter(model_path=PATH_TO_CKPT,
+                              experimental_delegates=[load_delegate('libedgetpu.so.1.0')])
+    print(PATH_TO_CKPT)
+else:
+    interpreter = Interpreter(model_path=PATH_TO_CKPT)
 
 interpreter.allocate_tensors()
 
@@ -284,9 +221,7 @@ while True:
             cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10), (xmin+labelSize[0], label_ymin+baseLine-10), (255, 255, 255), cv2.FILLED) # Draw white box to put label text in
             cv2.putText(frame, label, (xmin, label_ymin-7), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2) # Draw label text
 
-
-            #Select what object you wanted to detect
-            if object_name == 'cat':
+            if object_name == 'person':
                 print(object_name)
                 hasKeyObject = True
     # Draw framerate in corner of frame
@@ -299,7 +234,6 @@ while True:
     saveDir = '/home/pi/tflite1/Captured Images'
     mainDir = r'/home/pi/tflite1'
 
-
     if hasKeyObject:
         imgFilename='objectDetected(%d).jpg' % captureNumber
         os.chdir('/home/pi/tflite1/Captured Images')
@@ -307,9 +241,6 @@ while True:
         captureNumber += 1
 #         os.chdir(mainDir)%m/%d/%Y, %H:%M:%S
         print('saved')
-
-        #trigger Camera
-        captureImages()
 
     # Calculate framerate
     t2 = cv2.getTickCount()
