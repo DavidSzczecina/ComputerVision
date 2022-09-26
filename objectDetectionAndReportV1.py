@@ -10,8 +10,7 @@
 #
 # This code is based off the TensorFlow Lite image classification example at:
 # https://github.com/tensorflow/tensorflow/blob/master/tensorflow/lite/examples/python/label_image.py
-#
-# I added my own method of drawing boxes and labels using OpenCV.
+
 
 # Import packages
 import os
@@ -23,6 +22,15 @@ import time
 from threading import Thread
 import importlib.util
 import datetime
+import MySQLdb
+
+
+#SQL Stuff
+db = MySQLdb.connect(host="localhost", user="root", passwd="password", db="sensor") # replace password with your password
+cur = db.cursor()
+
+
+
 
 # Define VideoStream class to handle streaming of video from webcam in separate processing thread
 # Source - Adrian Rosebrock, PyImageSearch: https://www.pyimagesearch.com/2015/12/28/increasing-raspberry-pi-fps-with-python-and-opencv/
@@ -154,7 +162,7 @@ time.sleep(1)
 captureNumber = 0
 #for frame1 in camera.capture_continuous(rawCapture, format="bgr",use_video_port=True):
 while True:
-startTime = time.time()
+    
 
     # Start timer (for calculating frame rate)
     t1 = cv2.getTickCount()
@@ -212,16 +220,38 @@ startTime = time.time()
     saveDir = '/home/pi/tflite1/captureImages'
     mainDir = '/home/pi/tflite1'
 
-    currentTime = time.time()
+    sql = ("""INSERT INTO capturedImages (datetime, imgNum, fileName, object, certainty) VALUES (%s,%s,%s,%s,%s)""", (timeStamp, captureNumber, imgFilename, object, certainty))
 
-    if (currentTime-startTime > 5):
-        timeStamp = datetime.datetime.now()
-        imgFilename='objectDetected(%d).jpg' % timeStamp
-        os.chdir('/home/pi/tflite1/capturedImages')
-        cv2.imwrite(imgFilename, frame)
-        captureNumber += 1
 
-        startTime = currentTime
+    testThresh = 0.5
+    for i in range(len(scores)):
+        object = classes[i]
+        certainty = scores[i]
+        if certainty > testThresh:
+            timeStamp = datetime.datetime.now()
+            imgFilename='objectDetected(%d).jpg' % timeStamp
+            os.chdir('/home/pi/tflite1/capturedImages')
+            cv2.imwrite(imgFilename, frame)
+            captureNumber += 1
+
+            print(captureNumber)
+            
+            
+            #SQL Save Part
+            try:
+                print ("Writing to the database...")
+                cur.execute(*sql)
+                db.commit()
+                print ("Write complete")
+
+            except:
+                db.rollback()
+                print ("We have a problem")
+
+            cur.close()
+            db.close()
+
+            time.sleep(3)#sleep 3 seconds
 
 
 
